@@ -1,0 +1,78 @@
+services:
+  - type: web
+    name: flashfix-api
+    runtime: node
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATA_DIR
+        value: /var/data
+      - key: FRONTEND_ORIGIN
+        value: https://flashfix-private-app.onrender.com
+      - key: PORTAL_BASE_URL
+        value: https://flashfix-private-app.onrender.com
+      - key: API_PUBLIC_BASE_URL
+        value: https://flashfix-api.onrender.com
+      - key: JWT_SECRET
+        generateValue: true
+      - key: INITIAL_OWNER_NAME
+        value: FlashFix Owner
+      - key: INITIAL_OWNER_EMAIL
+        sync: false
+      - key: INITIAL_OWNER_PASSWORD
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: COMPANY_NAME
+        value: FLASHFIX TX Appliance Repair
+      - key: COMPANY_PHONE
+        value: "(210) 993-3339"
+      - key: COMPANY_EMAIL
+        value: info@flashfixtx.com
+      - key: COMPANY_WEBSITE
+        value: www.flashfixtx.com
+      - key: COMPANY_ADDRESS
+        value: San Antonio, TX
+    disk:
+      name: flashfix-data
+      mountPath: /var/data
+      sizeGB: 5
+
+  - type: web
+    name: flashfix-private-app
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://flashfix-api.onrender.com
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: sameorigin
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlashFix TX Appliance Repair</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">FF</div>
+        <div>
+          <h1>FlashFix TX</h1>
+          <p>Appliance Repair</p>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+        <button class="nav-btn" data-view="jobs">Jobs</button>
+        <button class="nav-btn" data-view="customers">Customers</button>
+        <button class="nav-btn" data-view="invoices">Invoices</button>
+        <button class="nav-btn" data-view="schedule">Dispatch</button>
+      </nav>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <h2 id="viewTitle">Operations Dashboard</h2>
+          <p id="todayLabel"></p>
+        </div>
+        <button id="seedBtn" class="ghost-btn">Reset Demo Data</button>
+      </header>
+
+      <section id="dashboard" class="view active">
+        <div class="kpi-grid" id="kpiGrid"></div>
+        <div class="card-grid">
+          <article class="card">
+            <h3>Today Jobs</h3>
+            <ul id="todayJobsList" class="list"></ul>
+          </article>
+          <article class="card">
+            <h3>Outstanding Invoices</h3>
+            <ul id="openInvoicesList" class="list"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="jobs" class="view">
+        <div class="section-head">
+          <h3>Job Pipeline</h3>
+        </div>
+        <form id="jobForm" class="inline-form">
+          <input name="customer" placeholder="Customer name" required />
+          <input name="service" placeholder="Service" required />
+          <input name="date" type="date" required />
+          <select name="priority">
+            <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+          <select name="status">
+            <option value="New">New</option>
+            <option value="Scheduled">Scheduled</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Completed">Completed</option>
+          </select>
+          <button type="submit">Add Job</button>
+        </form>
+        <div id="jobsTable"></div>
+      </section>
+
+      <section id="customers" class="view">
+        <div class="section-head">
+          <h3>Customer Directory</h3>
+        </div>
+        <form id="customerForm" class="inline-form">
+          <input name="name" placeholder="Full name" required />
+          <input name="phone" placeholder="Phone" required />
+          <input name="address" placeholder="Address" required />
+          <button type="submit">Add Customer</button>
+        </form>
+        <div id="customersTable"></div>
+      </section>
+
+      <section id="invoices" class="view">
+        <div class="section-head">
+          <h3>Invoice Management</h3>
+        </div>
+        <form id="invoiceForm" class="inline-form">
+          <input name="customer" placeholder="Customer" required />
+          <input name="amount" type="number" min="1" placeholder="Amount" required />
+          <input name="dueDate" type="date" required />
+          <select name="status">
+            <option value="Unpaid">Unpaid</option>
+            <option value="Paid">Paid</option>
+          </select>
+          <button type="submit">Add Invoice</button>
+        </form>
+        <div id="invoicesTable"></div>
+      </section>
+
+      <section id="schedule" class="view">
+        <div class="section-head">
+          <h3>Dispatch Schedule</h3>
+        </div>
+        <form id="dispatchForm" class="inline-form">
+          <input name="tech" placeholder="Technician" required />
+          <input name="job" placeholder="Job / Location" required />
+          <input name="date" type="date" required />
+          <input name="time" type="time" required />
+          <button type="submit">Add Slot</button>
+        </form>
+        <div id="dispatchTable"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

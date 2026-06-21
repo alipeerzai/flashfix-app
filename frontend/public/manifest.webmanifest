@@ -1,0 +1,24 @@
+{
+  "name": "FlashFix TX Appliance Repair",
+  "short_name": "FlashFix TX",
+  "description": "Business management app for FlashFix TX Appliance Repair.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#e6f6ff",
+  "theme_color": "#0f76b7",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

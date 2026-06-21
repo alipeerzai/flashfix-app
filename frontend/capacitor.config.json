@@ -1,0 +1,15 @@
+{
+  "appId": "com.flashfixtx.appliancerepair",
+  "appName": "FlashFix TX",
+  "webDir": "dist",
+  "ios": {
+    "scheme": "FlashFixTX",
+    "contentInset": "automatic"
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "LIGHT",
+      "backgroundColor": "#0f76b7"
+    }
+  }
+}
