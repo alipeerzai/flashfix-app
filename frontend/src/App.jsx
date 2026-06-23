@@ -188,6 +188,28 @@ export default function App() {
     });
   }, [nextJob]);
 
+  useEffect(() => {
+    if (!moduleMenuOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setModuleMenuOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moduleMenuOpen]);
+
+  useEffect(() => {
+    const closeMobileMenuOnDesktop = () => {
+      if (window.innerWidth > 1050) setModuleMenuOpen(false);
+    };
+    window.addEventListener("resize", closeMobileMenuOnDesktop);
+    return () => window.removeEventListener("resize", closeMobileMenuOnDesktop);
+  }, []);
+
   function openTab(nextTab) {
     setTab(nextTab);
     setModuleMenuOpen(false);
@@ -336,10 +358,14 @@ export default function App() {
 
   return (
     <main className={`app-shell ${moduleMenuOpen ? "menu-open" : ""}`}>
-      <aside className="sidebar">
-        <div className="brand-lockup">
-          <span>FLASHFIX TX</span>
-          <strong>Owner Console</strong>
+      {moduleMenuOpen && <button className="sidebar-scrim" type="button" aria-label="Close menu" onClick={() => setModuleMenuOpen(false)} />}
+      <aside className="sidebar" id="module-menu" aria-label="Main menu">
+        <div className="sidebar-top">
+          <div className="brand-lockup">
+            <span>FLASHFIX TX</span>
+            <strong>Owner Console</strong>
+          </div>
+          <button className="sidebar-close" type="button" aria-label="Close menu" onClick={() => setModuleMenuOpen(false)}>X</button>
         </div>
         <nav className="module-list">
           {availableTabs.filter((x) => PRIMARY_MODULES.includes(x)).map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => openTab(x)}>{x}</button>)}
@@ -351,7 +377,7 @@ export default function App() {
       </aside>
       <section className="workspace">
         <header className="app-header">
-          <button className="menu-button" onClick={() => setModuleMenuOpen((v) => !v)}>Menu</button>
+          <button className="menu-button" type="button" aria-controls="module-menu" aria-expanded={moduleMenuOpen} onClick={() => setModuleMenuOpen((v) => !v)}>{moduleMenuOpen ? "Close" : "Menu"}</button>
           <div>
             <span>{pageMeta.eyebrow}</span>
             <h1>{pageMeta.title}</h1>
