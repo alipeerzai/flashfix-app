@@ -185,14 +185,15 @@ async function deleteAttachmentsForEntity(entityType, entityId) {
 }
 
 async function bootstrapOwnerUser() {
-  const existing = await get("SELECT COUNT(*) AS count FROM users");
-  if (Number(existing?.count || 0) > 0) return;
+  const existingCount = await get("SELECT COUNT(*) AS count FROM users");
+  const email = String(process.env.INITIAL_OWNER_EMAIL || "").trim().toLowerCase();
+  const password = process.env.INITIAL_OWNER_PASSWORD || "";
+  const name = String(process.env.INITIAL_OWNER_NAME || "FlashFix Owner").trim() || "FlashFix Owner";
 
-  const email = process.env.INITIAL_OWNER_EMAIL;
-  const password = process.env.INITIAL_OWNER_PASSWORD;
-  const name = process.env.INITIAL_OWNER_NAME || "FlashFix Owner";
   if (!email || !password) {
-    console.warn("No users exist. Set INITIAL_OWNER_EMAIL and INITIAL_OWNER_PASSWORD to create the first owner account.");
+    if (Number(existingCount?.count || 0) === 0) {
+      console.warn("No users exist. Set INITIAL_OWNER_EMAIL and INITIAL_OWNER_PASSWORD to create the first owner account.");
+    }
     return;
   }
 
@@ -201,6 +202,13 @@ async function bootstrapOwnerUser() {
   }
 
   const hash = await bcrypt.hash(password, 10);
+  const existingOwner = await get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
+  if (existingOwner) {
+    await run("UPDATE users SET name = ?, password_hash = ?, role = ? WHERE id = ?", [name, hash, "owner", existingOwner.id]);
+    console.log(`Updated initial owner user: ${email}`);
+    return;
+  }
+
   await run("INSERT INTO users(name, email, password_hash, role) VALUES (?, ?, ?, ?)", [name, email, hash, "owner"]);
   console.log(`Created initial owner user: ${email}`);
 }
@@ -551,9 +559,11 @@ async function runAutomations() {
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.post("/auth/register", authRequired, requireRole("owner"), async (req, res) => {
-  const { name, email, password, role = "dispatcher" } = req.body;
+  const name = String(req.body.name || "").trim();
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const { password, role = "dispatcher" } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: "Missing required fields" });
-  const existing = await get("SELECT id FROM users WHERE email = ?", [email]);
+  const existing = await get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
   if (existing) return res.status(409).json({ error: "User already exists" });
   const hash = await bcrypt.hash(password, 10);
   const result = await run("INSERT INTO users(name, email, password_hash, role) VALUES (?, ?, ?, ?)", [name, email, hash, role]);
@@ -562,8 +572,9 @@ app.post("/auth/register", authRequired, requireRole("owner"), async (req, res) 
 });
 
 app.post("/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  const user = await get("SELECT * FROM users WHERE email = ?", [email]);
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const password = req.body.password || "";
+  const user = await get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: "Invalid credentials" });
