@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import PDFDocument from "pdfkit";
 import cron from "node-cron";
+import webpush from "web-push";
 import { all, get, initDb, logActivity, run } from "./db.js";
 import { authRequired } from "./auth.js";
 
@@ -55,6 +56,12 @@ const portalBaseUrl = process.env.PORTAL_BASE_URL || primaryFrontendOrigin;
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN) : null;
 if (process.env.SENDGRID_API_KEY) sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
+const pushEnabled = Boolean(vapidPublicKey && vapidPrivateKey);
+if (pushEnabled) {
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:${companyProfile.email}`, vapidPublicKey, vapidPrivateKey);
+}
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
@@ -527,12 +534,101 @@ async function sendReminderChannels({ customer, subject, text }) {
   return results;
 }
 
+function appointmentStart(appt) {
+  const date = String(appt.date || "").slice(0, 10);
+  const time = String(appt.time || "09:00").slice(0, 5);
+  const parsed = new Date(`${date}T${time.length === 5 ? time : "09:00"}:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function appointmentPushPayload(appt) {
+  const techLabel = appt.technician_name ? `Tech: ${appt.technician_name}` : "Technician not assigned";
+  const service = appt.service || `Job #${appt.job_id || appt.id}`;
+  return {
+    title: `Next FlashFix job: ${service}`,
+    body: `${appt.customer_name || "Customer"} at ${appt.time || "scheduled time"} - ${techLabel}`,
+    url: `${portalBaseUrl}/?section=Appointments`,
+    tag: `flashfix-appointment-${appt.id}`,
+    appointmentId: appt.id
+  };
+}
+
+async function getUpcomingAppointments(limit = 5) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const rows = await all(
+    `SELECT a.*, j.customer_name, j.service, j.address, t.name AS technician_name
+     FROM appointments a
+     LEFT JOIN jobs j ON j.id = a.job_id
+     LEFT JOIN technicians t ON t.id = a.technician_id
+     WHERE a.date >= ? AND a.status != 'Completed'
+     ORDER BY a.date ASC, a.time ASC
+     LIMIT ?`,
+    [todayIso, limit * 3]
+  );
+  return rows
+    .map((row) => ({ ...row, startsAt: appointmentStart(row)?.toISOString() || null }))
+    .filter((row) => row.startsAt && new Date(row.startsAt) >= new Date())
+    .slice(0, limit);
+}
+
+async function sendPushNotification(payload) {
+  if (!pushEnabled) return { enabled: false, sent: 0, failed: 0 };
+
+  const subs = await all("SELECT * FROM push_subscriptions ORDER BY id DESC");
+  let sent = 0;
+  let failed = 0;
+  for (const subRow of subs) {
+    try {
+      const subscription = JSON.parse(subRow.subscription_json);
+      await webpush.sendNotification(subscription, JSON.stringify(payload));
+      sent += 1;
+    } catch (err) {
+      failed += 1;
+      if ([404, 410].includes(Number(err.statusCode))) {
+        await run("DELETE FROM push_subscriptions WHERE id = ?", [subRow.id]);
+      } else {
+        console.error("Push notification failed", err.message);
+      }
+    }
+  }
+  return { enabled: true, sent, failed };
+}
+
+async function sendUpcomingJobPushReminders() {
+  const upcoming = await getUpcomingAppointments(10);
+  const now = new Date();
+  for (const appt of upcoming) {
+    const startsAt = new Date(appt.startsAt);
+    const minutesUntil = Math.round((startsAt - now) / 60000);
+    if (minutesUntil < 0 || minutesUntil > 90) continue;
+
+    const reminderDate = `${appt.date}T${appt.time || ""}`;
+    const exists = await get(
+      "SELECT id FROM reminder_logs WHERE reminder_type = ? AND entity_type = ? AND entity_id = ? AND reminder_date = ?",
+      ["next_job_push", "appointment", appt.id, reminderDate]
+    );
+    if (exists) continue;
+
+    const result = await sendPushNotification(appointmentPushPayload(appt));
+    const status = result.enabled && result.sent > 0 ? "sent" : "skipped";
+    const message = result.enabled
+      ? `Sent to ${result.sent} device(s); failed ${result.failed}.`
+      : "Push is not configured. Add VAPID keys in Render.";
+    await run(
+      "INSERT INTO reminder_logs(reminder_type, entity_type, entity_id, reminder_date, channel, status, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["next_job_push", "appointment", appt.id, reminderDate, "push", status, message]
+    );
+  }
+}
+
 async function runAutomations() {
   const today = new Date();
   const todayIso = today.toISOString().slice(0, 10);
   const tomorrow = new Date(today);
   tomorrow.setDate(today.getDate() + 1);
   const tomorrowIso = tomorrow.toISOString().slice(0, 10);
+
+  await sendUpcomingJobPushReminders();
 
   const appts = await all("SELECT a.*, j.customer_name FROM appointments a LEFT JOIN jobs j ON j.id = a.job_id WHERE a.date = ?", [tomorrowIso]);
   for (const a of appts) {
@@ -985,6 +1081,64 @@ app.post("/documents/:type/:id/email", authRequired, requireRole(...officeRoles)
   const host = getPublicApiBaseUrl(req);
   await sgMail.send({ to, from: process.env.SENDGRID_FROM_EMAIL, subject: `FlashFix ${type} #${id}`, text: `Your ${type} is ready: ${host}${doc.url}` });
   res.json({ sent: true, url: doc.url });
+});
+
+app.get("/notifications/config", authRequired, requireRole(...allRoles), async (_req, res) => {
+  res.json({
+    pushEnabled,
+    publicKey: pushEnabled ? vapidPublicKey : "",
+    message: pushEnabled ? "Push notifications are available." : "Push notifications need VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Render."
+  });
+});
+
+app.get("/notifications/next-job", authRequired, requireRole(...allRoles), async (_req, res) => {
+  const [next] = await getUpcomingAppointments(1);
+  res.json({ next: next || null });
+});
+
+app.post("/notifications/subscribe", authRequired, requireRole(...allRoles), async (req, res) => {
+  const subscription = req.body.subscription;
+  if (!subscription?.endpoint) return res.status(400).json({ error: "subscription.endpoint is required" });
+
+  const existing = await get("SELECT id FROM push_subscriptions WHERE endpoint = ?", [subscription.endpoint]);
+  const payload = JSON.stringify(subscription);
+  if (existing) {
+    await run("UPDATE push_subscriptions SET user_id = ?, subscription_json = ?, user_agent = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+      req.user.id,
+      payload,
+      req.headers["user-agent"] || "",
+      existing.id
+    ]);
+  } else {
+    await run("INSERT INTO push_subscriptions(user_id, endpoint, subscription_json, user_agent) VALUES (?, ?, ?, ?)", [
+      req.user.id,
+      subscription.endpoint,
+      payload,
+      req.headers["user-agent"] || ""
+    ]);
+  }
+
+  await logActivity(req.user.name, "subscribe", "push_notifications", req.user.id);
+  res.json({ ok: true });
+});
+
+app.delete("/notifications/subscribe", authRequired, requireRole(...allRoles), async (req, res) => {
+  const endpoint = req.body.endpoint;
+  if (!endpoint) return res.status(400).json({ error: "endpoint is required" });
+  await run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  await logActivity(req.user.name, "unsubscribe", "push_notifications", req.user.id);
+  res.json({ ok: true });
+});
+
+app.post("/notifications/test", authRequired, requireRole(...allRoles), async (req, res) => {
+  const payload = {
+    title: "FlashFix TX notification test",
+    body: "Phone notifications are connected for job reminders.",
+    url: `${portalBaseUrl}/?section=Appointments`,
+    tag: `flashfix-test-${req.user.id}`
+  };
+  const result = await sendPushNotification(payload);
+  res.json(result);
 });
 
 app.get("/reminders/logs", authRequired, requireRole("owner", "dispatcher", "accounting"), async (req, res) => res.json(await listWithPagination("reminder_logs", req, "created_at DESC")));

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, getApiUrl, setApiUrl } from "./api";
 
 const TABS = ["Dashboard", "Dispatch", "Jobs", "Customers", "Technicians", "Appointments", "Estimates", "Invoices", "Payments", "Attachments", "Documents", "Reminders", "Activity", "Users"];
@@ -6,6 +6,30 @@ const EMPTY_ITEM = { description: "", qty: 1, unit_price: 0 };
 const DEFAULT_AUTH = import.meta.env.DEV
   ? { email: "owner@flashfix.local", password: "Admin@123" }
   : { email: "", password: "" };
+const PAGE_META = {
+  Dashboard: { title: "Command Center", eyebrow: "Today", description: "Your live overview for jobs, collections, and the next appointment." },
+  Dispatch: { title: "Dispatch Board", eyebrow: "Scheduling", description: "Assign appointments to technicians and keep the day moving." },
+  Jobs: { title: "Jobs", eyebrow: "Work Orders", description: "Create and track appliance repair jobs from intake to completion." },
+  Customers: { title: "Customers", eyebrow: "CRM", description: "Manage customer contact details, addresses, and tags." },
+  Technicians: { title: "Technicians", eyebrow: "Team", description: "Manage technicians, skills, and availability." },
+  Appointments: { title: "Appointments", eyebrow: "Calendar", description: "Schedule job visits and see what is coming up next." },
+  Estimates: { title: "Estimates", eyebrow: "Sales", description: "Build estimates and convert approved work into invoices." },
+  Invoices: { title: "Invoices", eyebrow: "Billing", description: "Create invoices, update line items, and monitor balances." },
+  Payments: { title: "Payments", eyebrow: "Accounting", description: "Record payments and keep invoice balances accurate." },
+  Attachments: { title: "Attachments", eyebrow: "Files", description: "Upload job photos, documents, and supporting files." },
+  Documents: { title: "Documents", eyebrow: "PDF + Signature", description: "Generate professional PDFs and create customer signing links." },
+  Reminders: { title: "Reminders", eyebrow: "Automation", description: "Run reminders and connect phone notifications for upcoming jobs." },
+  Activity: { title: "Activity", eyebrow: "Audit", description: "Review recent changes made across the app." },
+  Users: { title: "Users", eyebrow: "Access", description: "Manage staff login access and roles." }
+};
+const PRIMARY_MODULES = ["Dashboard", "Jobs", "Appointments", "Invoices", "Documents"];
+const QUICK_ACTIONS = [
+  { label: "New Job", tab: "Jobs" },
+  { label: "New Customer", tab: "Customers" },
+  { label: "New Invoice", tab: "Invoices" },
+  { label: "PDF + Sign", tab: "Documents" },
+  { label: "Reminders", tab: "Reminders" }
+];
 
 export default function App() {
   const portalToken = window.location.pathname.startsWith("/portal/")
@@ -17,6 +41,8 @@ export default function App() {
   const [tab, setTab] = useState("Dashboard");
   const [error, setError] = useState("");
   const [editState, setEditState] = useState(null);
+  const [moduleMenuOpen, setModuleMenuOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [invoiceItems, setInvoiceItems] = useState([EMPTY_ITEM]);
   const [estimateItems, setEstimateItems] = useState([EMPTY_ITEM]);
@@ -48,9 +74,24 @@ export default function App() {
   const unpack = (x) => (Array.isArray(x) ? x : x.rows || []);
   const canOwner = me?.role === "owner";
   const canOffice = me && ["owner", "dispatcher", "accounting"].includes(me.role);
+  const availableTabs = TABS.filter((x) => x !== "Users" || canOwner);
+  const pageMeta = PAGE_META[tab] || { title: tab, eyebrow: "Module", description: "" };
   const selectedDocInvoice = docReq.type === "invoice"
     ? data.invoices.find((x) => String(x.id) === String(docReq.id))
     : null;
+  const nextJob = useMemo(() => {
+    const jobsById = Object.fromEntries(data.jobs.map((job) => [String(job.id), job]));
+    const techsById = Object.fromEntries(data.technicians.map((tech) => [String(tech.id), tech]));
+    return data.appointments
+      .map((appt) => {
+        const start = getAppointmentDateTime(appt);
+        const job = jobsById[String(appt.job_id)] || {};
+        const tech = techsById[String(appt.technician_id)] || {};
+        return { ...appt, start, customer_name: job.customer_name, service: job.service, address: job.address, technician_name: tech.name };
+      })
+      .filter((appt) => appt.start && appt.start >= new Date() && appt.status !== "Completed")
+      .sort((a, b) => a.start - b.start)[0] || null;
+  }, [data.appointments, data.jobs, data.technicians]);
   const paymentTotalsByInvoice = useMemo(() => {
     const map = {};
     for (const p of data.payments) {
@@ -127,7 +168,34 @@ export default function App() {
     });
   }
 
+  useEffect(() => {
+    const section = new URLSearchParams(window.location.search).get("section");
+    if (section && TABS.includes(section)) setTab(section);
+  }, []);
+
   useEffect(() => { if (token) loadAll(token).catch((e) => { setError(e.message); localStorage.removeItem("flashfix_token"); setToken(""); }); }, [token]);
+
+  useEffect(() => {
+    if (!nextJob || !("Notification" in window) || Notification.permission !== "granted") return;
+    const minutesUntil = Math.round((nextJob.start - new Date()) / 60000);
+    if (minutesUntil < 0 || minutesUntil > 90) return;
+    const key = `flashfix_next_job_${nextJob.id}_${nextJob.date}_${nextJob.time}`;
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, "sent");
+    new Notification(`Next FlashFix job in ${minutesUntil} min`, {
+      body: `${nextJob.customer_name || "Customer"} - ${nextJob.service || `Appointment #${nextJob.id}`}`,
+      tag: key
+    });
+  }, [nextJob]);
+
+  function openTab(nextTab) {
+    setTab(nextTab);
+    setModuleMenuOpen(false);
+    setQuickOpen(false);
+    const url = new URL(window.location.href);
+    url.searchParams.set("section", nextTab);
+    window.history.replaceState({}, "", url);
+  }
 
   async function post(path, body) {
     try {
@@ -267,12 +335,41 @@ export default function App() {
   if (!token) return <main className="login-wrap"><form className="card login" onSubmit={login}><h1>FlashFix TX</h1><input value={auth.email} onChange={(e) => setAuth({ ...auth, email: e.target.value })} placeholder="Email" /><input type="password" value={auth.password} onChange={(e) => setAuth({ ...auth, password: e.target.value })} placeholder="Password" /><button>Sign In</button><details className="api-settings"><summary>Backend Settings</summary><input value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)} placeholder="https://your-backend-url.com" /><button type="button" onClick={() => { setApiUrl(apiBaseUrl); window.location.reload(); }}>Save Backend URL</button><small>For the iOS app, use your hosted HTTPS backend URL instead of localhost.</small></details>{error && <p className="error">{error}</p>}</form></main>;
 
   return (
-    <main className="app">
-      <header className="top"><h1>FlashFix TX | {me?.role}</h1><button onClick={() => { localStorage.removeItem("flashfix_token"); setToken(""); }}>Logout</button></header>
-      <nav className="tabs">{TABS.filter((x) => x !== "Users" || canOwner).map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => setTab(x)}>{x}</button>)}</nav>
-      {error && <p className="error">{error}</p>}
+    <main className={`app-shell ${moduleMenuOpen ? "menu-open" : ""}`}>
+      <aside className="sidebar">
+        <div className="brand-lockup">
+          <span>FLASHFIX TX</span>
+          <strong>Owner Console</strong>
+        </div>
+        <nav className="module-list">
+          {availableTabs.map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => openTab(x)}>{x}</button>)}
+        </nav>
+      </aside>
+      <section className="workspace">
+        <header className="app-header">
+          <button className="menu-button" onClick={() => setModuleMenuOpen((v) => !v)}>Menu</button>
+          <div>
+            <span>{pageMeta.eyebrow}</span>
+            <h1>{pageMeta.title}</h1>
+            <p>{pageMeta.description}</p>
+          </div>
+          <div className="header-actions">
+            {nextJob && <button className="next-pill" onClick={() => openTab("Appointments")}>Next: {nextJob.time} {nextJob.customer_name || "job"}</button>}
+            <button onClick={() => { localStorage.removeItem("flashfix_token"); setToken(""); }}>Logout</button>
+          </div>
+        </header>
+        {error && <p className="error">{error}</p>}
+        <div className="page-body">
 
-      {tab === "Dashboard" && data.dashboard && <section className="grid kpis">{Object.entries(data.dashboard).map(([k, v]) => <article className="card" key={k}><h4>{k}</h4><p>{k.includes("Revenue") ? currency.format(v) : v}</p></article>)}</section>}
+      {tab === "Dashboard" && data.dashboard && (
+        <>
+          <section className="grid kpis">{Object.entries(data.dashboard).map(([k, v]) => <article className="card kpi-card" key={k}><span>{k}</span><strong>{k.includes("Revenue") ? currency.format(v) : v}</strong></article>)}</section>
+          <section className="grid two dashboard-panels">
+            <NextJobPanel nextJob={nextJob} onOpenAppointments={() => openTab("Appointments")} />
+            <NotificationPanel token={token} nextJob={nextJob} setError={setError} />
+          </section>
+        </>
+      )}
 
       {tab === "Dispatch" && <DispatchBoard dispatch={data.dispatch} onDrop={async (apptId, techId) => put(`/dispatch/appointments/${apptId}/reassign`, { technician_id: Number(techId) })} />}
 
@@ -385,13 +482,186 @@ export default function App() {
         </section>
       )}
 
-      {tab === "Reminders" && <section className="card"><h3>Background Reminders</h3><button onClick={() => post("/reminders/run", {})}>Run Now</button><Table headers={["When", "Type", "Entity", "Channel", "Status", "Message"]} rows={data.reminders.map((r) => [r.created_at, r.reminder_type, `${r.entity_type} #${r.entity_id}`, r.channel, r.status, r.message])} /></section>}
+      {tab === "Reminders" && <section className="grid two"><NotificationPanel token={token} nextJob={nextJob} setError={setError} /><article className="card"><h3>Background Reminders</h3><button onClick={() => post("/reminders/run", {})}>Run Now</button><Table headers={["When", "Type", "Entity", "Channel", "Status", "Message"]} rows={data.reminders.map((r) => [r.created_at, r.reminder_type, `${r.entity_type} #${r.entity_id}`, r.channel, r.status, r.message])} /></article></section>}
 
       {tab === "Activity" && <section className="card"><h3>Activity</h3><Table headers={["When", "Actor", "Action", "Entity", "Details"]} rows={data.activity.map((r) => [r.created_at, r.actor, r.action, r.entity_type, r.details])} /></section>}
       {tab === "Users" && canOwner && <EntityCard title="Users" readOnly={false} form={forms.user} setForm={(v) => setForms({ ...forms, user: v })} onCreate={() => post("/auth/register", forms.user)} headers={["ID", "Name", "Email", "Role"]} rows={data.users.map((r) => [r.id, r.name, r.email, r.role])} />}
 
+        </div>
+      </section>
+      <QuickActionMenu open={quickOpen} setOpen={setQuickOpen} actions={QUICK_ACTIONS.filter((action) => availableTabs.includes(action.tab))} onSelect={openTab} />
       {editState && <EditModal state={editState} onClose={() => setEditState(null)} onSave={async (row) => { const ok = await put(`/${editState.entity}/${row.id}`, row); if (ok) setEditState(null); }} />}
     </main>
+  );
+}
+
+function QuickActionMenu({ open, setOpen, actions, onSelect }) {
+  return (
+    <div className={`quick-actions ${open ? "open" : ""}`}>
+      {open && <div className="quick-menu">{actions.map((action) => <button key={action.label} onClick={() => onSelect(action.tab)}>{action.label}</button>)}</div>}
+      <button className="quick-fab" onClick={() => setOpen((v) => !v)} aria-label="Quick actions">{open ? "x" : "+"}</button>
+    </div>
+  );
+}
+
+function NextJobPanel({ nextJob, onOpenAppointments }) {
+  return (
+    <article className="card next-job-card">
+      <span>Next Job</span>
+      {nextJob ? (
+        <>
+          <h3>{nextJob.customer_name || `Appointment #${nextJob.id}`}</h3>
+          <p>{nextJob.service || "Service appointment"}</p>
+          <strong>{formatDateTime(nextJob.start)}</strong>
+          <small>{nextJob.address || "No address saved"} {nextJob.technician_name ? `| ${nextJob.technician_name}` : ""}</small>
+          <button onClick={onOpenAppointments}>Open Appointments</button>
+        </>
+      ) : (
+        <>
+          <h3>No upcoming job</h3>
+          <p>Create an appointment to see the next scheduled job here.</p>
+          <button onClick={onOpenAppointments}>Schedule Job</button>
+        </>
+      )}
+    </article>
+  );
+}
+
+function NotificationPanel({ token, nextJob, setError }) {
+  const [status, setStatus] = useState("Not enabled yet.");
+  const [busy, setBusy] = useState(false);
+
+  async function enableNotifications() {
+    setBusy(true);
+    try {
+      if (!("Notification" in window)) {
+        setStatus("This browser does not support notifications.");
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setStatus("Notification permission was not granted.");
+        return;
+      }
+
+      let connectedToPush = false;
+      const config = await api("/notifications/config", { token });
+      if (config.pushEnabled && "serviceWorker" in navigator && "PushManager" in window) {
+        const registration = await navigator.serviceWorker.ready;
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(config.publicKey)
+          });
+        }
+        await api("/notifications/subscribe", { token, method: "POST", body: { subscription: subscription.toJSON() } });
+        connectedToPush = true;
+      }
+
+      setStatus(connectedToPush ? "Phone push notifications are connected." : `${config.message} Local reminders work while the app is open.`);
+      new Notification("FlashFix TX notifications enabled", { body: "You will be reminded before upcoming jobs." });
+    } catch (e) {
+      setError(e.message);
+      setStatus(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testNotification() {
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("FlashFix TX test", { body: nextJob ? `Next job: ${nextJob.customer_name || nextJob.service}` : "Notifications are ready." });
+      }
+      const result = await api("/notifications/test", { token, method: "POST", body: {} });
+      setStatus(result.enabled ? `Push test sent to ${result.sent} device(s).` : "Local test sent. Server push needs VAPID keys in Render.");
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  return (
+    <article className="card notification-card">
+      <span>Phone Notifications</span>
+      <h3>Upcoming Job Alerts</h3>
+      <p>Enable this after adding the app to your phone Home Screen. The app will remind you before the next scheduled job.</p>
+      <div className="row-actions">
+        <button disabled={busy} onClick={enableNotifications}>Enable Notifications</button>
+        <button onClick={testNotification}>Send Test</button>
+      </div>
+      <small>{status}</small>
+    </article>
+  );
+}
+
+function SignaturePad({ onChange }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const resize = () => {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * ratio;
+      canvas.height = 170 * ratio;
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = "#123d5f";
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+
+  function point(e) {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function start(e) {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const p = point(e);
+    drawingRef.current = true;
+    canvas.setPointerCapture(e.pointerId);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  }
+
+  function move(e) {
+    if (!drawingRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const p = point(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    onChange(canvas.toDataURL("image/png"));
+  }
+
+  function end(e) {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    canvasRef.current.releasePointerCapture(e.pointerId);
+    onChange(canvasRef.current.toDataURL("image/png"));
+  }
+
+  function clear() {
+    const canvas = canvasRef.current;
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    onChange("");
+  }
+
+  return (
+    <div className="signature-pad">
+      <canvas ref={canvasRef} onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end} />
+      <button type="button" onClick={clear}>Clear Signature</button>
+    </div>
   );
 }
 
@@ -399,6 +669,7 @@ function CustomerPortal({ token }) {
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState("");
   const [signatureName, setSignatureName] = useState("");
+  const [signatureData, setSignatureData] = useState("");
   const [busy, setBusy] = useState(false);
   const [syncingPayment, setSyncingPayment] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
@@ -440,9 +711,10 @@ function CustomerPortal({ token }) {
 
   async function signInvoice() {
     if (!signatureName.trim()) return setError("Enter customer name to sign.");
+    if (!signatureData && !payload?.invoice?.customer_signature_data) return setError("Draw your signature before saving.");
     setBusy(true);
     try {
-      await api(`/portal/${token}/sign`, { method: "POST", body: { signature_name: signatureName.trim() } });
+      await api(`/portal/${token}/sign`, { method: "POST", body: { signature_name: signatureName.trim(), signature_data: signatureData || payload.invoice.customer_signature_data } });
       await loadPortal();
     } catch (e) {
       setError(e.message);
@@ -534,7 +806,9 @@ function CustomerPortal({ token }) {
           <div className="signature-panel">
             <label>Customer signature</label>
             <input value={signatureName} onChange={(e) => setSignatureName(e.target.value)} placeholder="Customer signature name" />
-            <button disabled={busy} onClick={signInvoice}>Sign Invoice</button>
+            <SignaturePad onChange={setSignatureData} />
+            <button disabled={busy} onClick={signInvoice}>Save Electronic Signature</button>
+            {invoice.customer_signature_name && <small>Signed by {invoice.customer_signature_name} on {invoice.customer_signature_date}</small>}
           </div>
           <div className="payment-panel">
             <button disabled={busy} onClick={downloadPdf}>Download PDF</button>
@@ -580,3 +854,28 @@ function EditModal({ state, onClose, onSave }) {
 }
 
 function Table({ headers, rows }) { return <div className="table-wrap"><table><thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={`${i}-${j}`}>{c}</td>)}</tr>)}</tbody></table></div>; }
+
+function getAppointmentDateTime(appt) {
+  const date = String(appt.date || "").slice(0, 10);
+  const time = String(appt.time || "09:00").slice(0, 5);
+  const parsed = new Date(`${date}T${time.length === 5 ? time : "09:00"}:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(value);
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = `${base64String}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+}

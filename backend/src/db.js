@@ -263,6 +263,16 @@ export async function initDb() {
     message TEXT,
     created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  await run(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    ${idColumn},
+    user_id INTEGER,
+    endpoint TEXT UNIQUE NOT NULL,
+    subscription_json TEXT NOT NULL,
+    user_agent TEXT,
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
 }
 
 export async function logActivity(actor, action, entityType, entityId, details = "") {

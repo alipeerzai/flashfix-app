@@ -10,6 +10,8 @@
 - RBAC + paginated APIs + line-item estimate/invoice workflows
 - Branded professional invoice PDFs with FLASHFIX TX logo + customer signature block
 - Stripe checkout payment sync from customer portal and admin invoice screens
+- Draw-to-sign customer portal signatures saved into invoice PDFs
+- PWA phone notification support for upcoming job reminders
 - iOS-ready Capacitor wrapper in `frontend/ios`
 
 ## Run
@@ -54,6 +56,11 @@ Open: `http://localhost:5173`
 - `POST /portal/:token/pdf`
 - `POST /invoices/:id/sync-checkout`
 - `POST /stripe/webhook`
+- `GET /notifications/config`
+- `GET /notifications/next-job`
+- `POST /notifications/subscribe`
+- `DELETE /notifications/subscribe`
+- `POST /notifications/test`
 - `GET /reminders/logs`
 - `POST /reminders/run`
 
@@ -72,7 +79,7 @@ Automations run every 15 minutes via `node-cron` and write to `reminder_logs`.
 1. In `Documents`, select an invoice.
 2. Click `Create Customer Portal Link`.
 3. Open or email the portal link.
-4. Customer can sign, download PDF, and pay through Stripe Checkout.
+4. Customer can draw an electronic signature, download PDF, and pay through Stripe Checkout.
 5. Stripe sends `checkout.session.completed` to `/stripe/webhook`, which records payment and updates invoice status.
 6. If the webhook is delayed, click `Sync Stripe` in the Invoices tab or `Sync Stripe Payment` in Documents.
 
@@ -81,6 +88,20 @@ Required backend `.env` values:
 - `STRIPE_WEBHOOK_SECRET`
 - `PORTAL_BASE_URL=http://localhost:5173` for local dev, or your deployed frontend URL
 - `FRONTEND_ORIGIN=http://localhost:5173` for local dev
+
+## Phone Job Notifications
+
+The app supports browser/PWA notifications for upcoming jobs.
+
+For local/in-app reminders, click `Enable Notifications` in the Dashboard or Reminders page.
+
+For true phone push while the app is closed, add these backend environment variables in Render:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT=mailto:info@flashfixtx.com`
+
+Then redeploy the backend, open the app on iPhone, use `Share > Add to Home Screen`, and enable notifications from the Dashboard.
 
 For local webhook testing with Stripe CLI:
 - `stripe listen --forward-to localhost:4000/stripe/webhook`

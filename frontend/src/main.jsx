@@ -17,6 +17,14 @@ async function initializeNativeShell() {
 
 initializeNativeShell();
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Push notifications are optional; registration failure should not block the app.
+    });
+  });
+}
+
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <App />

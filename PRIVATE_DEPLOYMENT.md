@@ -81,6 +81,16 @@ DATABASE_SSL=true
 If you skip SendGrid/Twilio, PDF generation and payments still work. Email/SMS sending will show "not configured".
 Stripe, SendGrid, and Twilio can be added later in Render after the first deploy.
 
+Optional phone push notification secrets:
+
+```text
+VAPID_PUBLIC_KEY=generated public key
+VAPID_PRIVATE_KEY=generated private key
+VAPID_SUBJECT=mailto:info@flashfixtx.com
+```
+
+These are only required if you want job reminders to appear on your phone while the app is closed. Without them, reminders still work inside the app while it is open.
+
 ## Step 4: Confirm URLs
 
 The default blueprint assumes these URLs:
@@ -140,6 +150,7 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 2. Tap Share.
 3. Tap `Add to Home Screen`.
 4. Name it `FlashFix TX`.
+5. Open the home-screen app and click `Enable Notifications` from the Dashboard.
 
 This gives you a home-screen app icon without App Store publishing.
 
