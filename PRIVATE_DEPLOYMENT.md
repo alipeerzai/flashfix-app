@@ -76,16 +76,10 @@ INITIAL_OWNER_EMAIL=your real owner login email
 INITIAL_OWNER_PASSWORD=strong private password, at least 10 characters
 DATABASE_URL=your Supabase/Neon Postgres connection string
 DATABASE_SSL=true
-STRIPE_SECRET_KEY=your Stripe secret key
-STRIPE_WEBHOOK_SECRET=leave blank first, then update after webhook setup
-SENDGRID_API_KEY=optional, for sending emails
-SENDGRID_FROM_EMAIL=optional, for sending emails
-TWILIO_ACCOUNT_SID=optional, for SMS
-TWILIO_AUTH_TOKEN=optional, for SMS
-TWILIO_FROM_NUMBER=optional, for SMS
 ```
 
 If you skip SendGrid/Twilio, PDF generation and payments still work. Email/SMS sending will show "not configured".
+Stripe, SendGrid, and Twilio can be added later in Render after the first deploy.
 
 ## Step 4: Confirm URLs
 
