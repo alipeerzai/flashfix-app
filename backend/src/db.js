@@ -1,4 +1,3 @@
-import sqlite3 from "sqlite3";
 import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,6 +16,7 @@ const dbPath = process.env.DATABASE_PATH
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 export const isPostgres = Boolean(process.env.DATABASE_URL);
+const sqlite3 = isPostgres ? null : (await import("sqlite3")).default;
 export const db = isPostgres
   ? new pg.Pool({
       connectionString: process.env.DATABASE_URL,
