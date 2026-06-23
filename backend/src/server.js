@@ -184,33 +184,44 @@ async function deleteAttachmentsForEntity(entityType, entityId) {
   for (const row of rows) await deleteAttachmentRecord(row);
 }
 
+function getInitialOwnerConfig() {
+  return {
+    email: String(process.env.INITIAL_OWNER_EMAIL || "").trim().toLowerCase(),
+    password: process.env.INITIAL_OWNER_PASSWORD || "",
+    name: String(process.env.INITIAL_OWNER_NAME || "FlashFix Owner").trim() || "FlashFix Owner"
+  };
+}
+
+async function upsertInitialOwnerUser({ email, password, name }) {
+  const hash = await bcrypt.hash(password, 10);
+  const existingOwner = await get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
+  if (existingOwner) {
+    await run("UPDATE users SET name = ?, password_hash = ?, role = ? WHERE id = ?", [name, hash, "owner", existingOwner.id]);
+    console.log(`Updated initial owner user: ${email}`);
+    return existingOwner.id;
+  }
+
+  const created = await run("INSERT INTO users(name, email, password_hash, role) VALUES (?, ?, ?, ?)", [name, email, hash, "owner"]);
+  console.log(`Created initial owner user: ${email}`);
+  return created.id;
+}
+
 async function bootstrapOwnerUser() {
   const existingCount = await get("SELECT COUNT(*) AS count FROM users");
-  const email = String(process.env.INITIAL_OWNER_EMAIL || "").trim().toLowerCase();
-  const password = process.env.INITIAL_OWNER_PASSWORD || "";
-  const name = String(process.env.INITIAL_OWNER_NAME || "FlashFix Owner").trim() || "FlashFix Owner";
+  const ownerConfig = getInitialOwnerConfig();
 
-  if (!email || !password) {
+  if (!ownerConfig.email || !ownerConfig.password) {
     if (Number(existingCount?.count || 0) === 0) {
       console.warn("No users exist. Set INITIAL_OWNER_EMAIL and INITIAL_OWNER_PASSWORD to create the first owner account.");
     }
     return;
   }
 
-  if (password.length < 10) {
+  if (ownerConfig.password.length < 10) {
     throw new Error("INITIAL_OWNER_PASSWORD must be at least 10 characters for production bootstrap.");
   }
 
-  const hash = await bcrypt.hash(password, 10);
-  const existingOwner = await get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
-  if (existingOwner) {
-    await run("UPDATE users SET name = ?, password_hash = ?, role = ? WHERE id = ?", [name, hash, "owner", existingOwner.id]);
-    console.log(`Updated initial owner user: ${email}`);
-    return;
-  }
-
-  await run("INSERT INTO users(name, email, password_hash, role) VALUES (?, ?, ?, ?)", [name, email, hash, "owner"]);
-  console.log(`Created initial owner user: ${email}`);
+  await upsertInitialOwnerUser(ownerConfig);
 }
 
 function dataUrlToBuffer(dataUrl) {
@@ -574,10 +585,17 @@ app.post("/auth/register", authRequired, requireRole("owner"), async (req, res) 
 app.post("/auth/login", async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = req.body.password || "";
-  const user = await get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-  const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+  let user = await get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+  let ok = user ? await bcrypt.compare(password, user.password_hash) : false;
+
+  const ownerConfig = getInitialOwnerConfig();
+  if (!ok && ownerConfig.email && email === ownerConfig.email && password === ownerConfig.password) {
+    await upsertInitialOwnerUser(ownerConfig);
+    user = await get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+    ok = Boolean(user);
+  }
+
+  if (!ok || !user) return res.status(401).json({ error: "Invalid credentials" });
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
