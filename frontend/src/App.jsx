@@ -3,12 +3,15 @@ import { api, getApiUrl, setApiUrl } from "./api";
 
 const TABS = ["Dashboard", "Dispatch", "Jobs", "Customers", "Technicians", "Appointments", "Estimates", "Invoices", "Payments", "Attachments", "Documents", "Reminders", "Activity", "Users"];
 const EMPTY_ITEM = { description: "", qty: 1, unit_price: 0 };
+const DEFAULT_AUTH = import.meta.env.DEV
+  ? { email: "owner@flashfix.local", password: "Admin@123" }
+  : { email: "", password: "" };
 
 export default function App() {
   const portalToken = window.location.pathname.startsWith("/portal/")
     ? window.location.pathname.split("/portal/")[1]?.split("/")[0]
     : "";
-  const [auth, setAuth] = useState({ email: "owner@flashfix.local", password: "Admin@123" });
+  const [auth, setAuth] = useState(DEFAULT_AUTH);
   const [token, setToken] = useState(localStorage.getItem("flashfix_token") || "");
   const [me, setMe] = useState(null);
   const [tab, setTab] = useState("Dashboard");
