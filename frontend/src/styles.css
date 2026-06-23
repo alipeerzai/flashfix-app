@@ -104,6 +104,28 @@ body {
   box-shadow: 0 10px 22px rgba(18, 63, 99, 0.18);
 }
 
+.module-more {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #cde8f8;
+}
+
+.module-more summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  color: #0f76b7;
+  font-weight: 900;
+  border-radius: 14px;
+}
+
+.module-more summary:hover {
+  background: #eef9ff;
+}
+
+.module-more button {
+  margin-top: 6px;
+}
+
 .workspace {
   min-width: 0;
   display: grid;

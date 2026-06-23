@@ -342,7 +342,11 @@ export default function App() {
           <strong>Owner Console</strong>
         </div>
         <nav className="module-list">
-          {availableTabs.map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => openTab(x)}>{x}</button>)}
+          {availableTabs.filter((x) => PRIMARY_MODULES.includes(x)).map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => openTab(x)}>{x}</button>)}
+          <details className="module-more">
+            <summary>More sections</summary>
+            {availableTabs.filter((x) => !PRIMARY_MODULES.includes(x)).map((x) => <button key={x} className={x === tab ? "active" : ""} onClick={() => openTab(x)}>{x}</button>)}
+          </details>
         </nav>
       </aside>
       <section className="workspace">
