@@ -158,6 +158,10 @@ function getPublicApiBaseUrl(req) {
   return `${req.protocol}://${req.get("host")}`;
 }
 
+function mailtoUrl({ to, subject, body }) {
+  return `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 function safeFileName(name) {
   return String(name || "file").replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
@@ -546,16 +550,19 @@ function appointmentPushPayload(appt) {
   const service = appt.service || `Job #${appt.job_id || appt.id}`;
   return {
     title: `Next FlashFix job: ${service}`,
-    body: `${appt.customer_name || "Customer"} at ${appt.time || "scheduled time"} - ${techLabel}`,
-    url: `${portalBaseUrl}/?section=Appointments`,
-    tag: `flashfix-appointment-${appt.id}`,
-    appointmentId: appt.id
+    body: appt.allDay
+      ? `${appt.customer_name || "Customer"} scheduled for ${appt.date} - ${techLabel}`
+      : `${appt.customer_name || "Customer"} at ${appt.time || "scheduled time"} - ${techLabel}`,
+    url: `${portalBaseUrl}/?section=${appt.source === "job" ? "Jobs" : "Appointments"}`,
+    tag: `flashfix-${appt.source || "appointment"}-${appt.id}`,
+    appointmentId: appt.source === "appointment" ? appt.id : null,
+    jobId: appt.job_id || appt.id
   };
 }
 
 async function getUpcomingAppointments(limit = 5) {
   const todayIso = new Date().toISOString().slice(0, 10);
-  const rows = await all(
+  const appointmentRows = await all(
     `SELECT a.*, j.customer_name, j.service, j.address, t.name AS technician_name
      FROM appointments a
      LEFT JOIN jobs j ON j.id = a.job_id
@@ -565,9 +572,33 @@ async function getUpcomingAppointments(limit = 5) {
      LIMIT ?`,
     [todayIso, limit * 3]
   );
-  return rows
+
+  const jobRows = await all(
+    `SELECT j.*
+     FROM jobs j
+     WHERE j.scheduled_date >= ?
+       AND j.status != 'Completed'
+       AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a.job_id = j.id)
+     ORDER BY j.scheduled_date ASC, j.id ASC
+     LIMIT ?`,
+    [todayIso, limit * 3]
+  );
+
+  return [
+    ...appointmentRows.map((row) => ({ ...row, source: "appointment" })),
+    ...jobRows.map((job) => ({
+      ...job,
+      source: "job",
+      allDay: true,
+      job_id: job.id,
+      date: job.scheduled_date,
+      time: "23:59",
+      technician_name: job.technician
+    }))
+  ]
     .map((row) => ({ ...row, startsAt: appointmentStart(row)?.toISOString() || null }))
     .filter((row) => row.startsAt && new Date(row.startsAt) >= new Date())
+    .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt))
     .slice(0, limit);
 }
 
@@ -597,15 +628,17 @@ async function sendPushNotification(payload) {
 async function sendUpcomingJobPushReminders() {
   const upcoming = await getUpcomingAppointments(10);
   const now = new Date();
+  const todayIso = now.toISOString().slice(0, 10);
   for (const appt of upcoming) {
     const startsAt = new Date(appt.startsAt);
-    const minutesUntil = Math.round((startsAt - now) / 60000);
+    const minutesUntil = appt.allDay && appt.date === todayIso ? 0 : Math.round((startsAt - now) / 60000);
     if (minutesUntil < 0 || minutesUntil > 90) continue;
 
     const reminderDate = `${appt.date}T${appt.time || ""}`;
+    const entityType = appt.source === "job" ? "job" : "appointment";
     const exists = await get(
       "SELECT id FROM reminder_logs WHERE reminder_type = ? AND entity_type = ? AND entity_id = ? AND reminder_date = ?",
-      ["next_job_push", "appointment", appt.id, reminderDate]
+      ["next_job_push", entityType, appt.id, reminderDate]
     );
     if (exists) continue;
 
@@ -616,7 +649,7 @@ async function sendUpcomingJobPushReminders() {
       : "Push is not configured. Add VAPID keys in Render.";
     await run(
       "INSERT INTO reminder_logs(reminder_type, entity_type, entity_id, reminder_date, channel, status, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ["next_job_push", "appointment", appt.id, reminderDate, "push", status, message]
+      ["next_job_push", entityType, appt.id, reminderDate, "push", status, message]
     );
   }
 }
@@ -879,10 +912,6 @@ app.post("/invoices/:id/portal-link", authRequired, requireRole("owner", "dispat
 });
 
 app.post("/invoices/:id/send-portal-link", authRequired, requireRole("owner", "dispatcher", "accounting"), async (req, res) => {
-  if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
-    return res.status(503).json({ error: "SendGrid not configured" });
-  }
-
   const id = Number(req.params.id);
   const invoice = await get("SELECT * FROM invoices WHERE id = ?", [id]);
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
@@ -893,14 +922,28 @@ app.post("/invoices/:id/send-portal-link", authRequired, requireRole("owner", "d
 
   const token = await ensurePortalToken(id);
   const url = `${portalBaseUrl}/portal/${token}`;
+  const subject = `FLASHFIX TX invoice #${id}`;
+  const text = `View, sign, and pay your FLASHFIX TX invoice here: ${url}`;
+
+  if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+    await logActivity(req.user.name, "draft", "portal_link", id, `to=${to}`);
+    return res.json({
+      sent: false,
+      fallback: "mailto",
+      url,
+      mailto: mailtoUrl({ to, subject, body: text }),
+      message: "SendGrid is not configured. Opened an email draft instead."
+    });
+  }
+
   await sgMail.send({
     to,
     from: process.env.SENDGRID_FROM_EMAIL,
-    subject: `FLASHFIX TX invoice #${id}`,
-    text: `View, sign, and pay your FLASHFIX TX invoice here: ${url}`
+    subject,
+    text
   });
   await logActivity(req.user.name, "send", "portal_link", id, `to=${to}`);
-  res.json({ sent: true, url });
+  res.json({ sent: true, url, message: "Email sent." });
 });
 
 app.get("/portal/:token", async (req, res) => {
@@ -1065,22 +1108,49 @@ app.delete("/attachments/:id", authRequired, requireRole("owner", "dispatcher", 
 });
 
 app.post("/documents/:type/:id/pdf", authRequired, requireRole(...officeRoles), async (req, res) => {
-  const type = req.params.type;
-  if (!["invoice", "estimate"].includes(type)) return res.status(400).json({ error: "Invalid type" });
-  const doc = await renderDocumentPdf(type, Number(req.params.id));
-  res.json(doc);
+  try {
+    const type = req.params.type;
+    if (!["invoice", "estimate"].includes(type)) return res.status(400).json({ error: "Invalid type" });
+    const doc = await renderDocumentPdf(type, Number(req.params.id));
+    res.json(doc);
+  } catch (err) {
+    const status = /not found/i.test(err.message) ? 404 : 500;
+    res.status(status).json({ error: err.message || "PDF generation failed" });
+  }
 });
 
 app.post("/documents/:type/:id/email", authRequired, requireRole(...officeRoles), async (req, res) => {
-  if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) return res.status(503).json({ error: "SendGrid not configured" });
-  const type = req.params.type;
-  const id = Number(req.params.id);
-  const to = req.body.to;
-  if (!to) return res.status(400).json({ error: "to is required" });
-  const doc = await renderDocumentPdf(type, id);
-  const host = getPublicApiBaseUrl(req);
-  await sgMail.send({ to, from: process.env.SENDGRID_FROM_EMAIL, subject: `FlashFix ${type} #${id}`, text: `Your ${type} is ready: ${host}${doc.url}` });
-  res.json({ sent: true, url: doc.url });
+  try {
+    const type = req.params.type;
+    if (!["invoice", "estimate"].includes(type)) return res.status(400).json({ error: "Invalid type" });
+    const id = Number(req.params.id);
+    const to = req.body.to;
+    if (!to) return res.status(400).json({ error: "to is required" });
+    const doc = await renderDocumentPdf(type, id);
+    const host = getPublicApiBaseUrl(req);
+    const publicUrl = `${host}${doc.url}`;
+    const subject = `FlashFix ${type} #${id}`;
+    const text = `Your ${type} is ready: ${publicUrl}`;
+
+    if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+      await logActivity(req.user.name, "draft", `${type}_email`, id, `to=${to}`);
+      return res.json({
+        sent: false,
+        fallback: "mailto",
+        url: doc.url,
+        publicUrl,
+        mailto: mailtoUrl({ to, subject, body: text }),
+        message: "SendGrid is not configured. Opened an email draft instead."
+      });
+    }
+
+    await sgMail.send({ to, from: process.env.SENDGRID_FROM_EMAIL, subject, text });
+    await logActivity(req.user.name, "send", `${type}_email`, id, `to=${to}`);
+    res.json({ sent: true, url: doc.url, publicUrl, message: "Email sent." });
+  } catch (err) {
+    const status = /not found/i.test(err.message) ? 404 : 500;
+    res.status(status).json({ error: err.message || "Email document failed" });
+  }
 });
 
 app.get("/notifications/config", authRequired, requireRole(...allRoles), async (_req, res) => {

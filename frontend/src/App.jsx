@@ -30,6 +30,12 @@ const QUICK_ACTIONS = [
   { label: "PDF + Sign", tab: "Documents" },
   { label: "Reminders", tab: "Reminders" }
 ];
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const addDaysIso = (days) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+};
 
 export default function App() {
   const portalToken = window.location.pathname.startsWith("/portal/")
@@ -50,18 +56,20 @@ export default function App() {
   const [attachments, setAttachments] = useState([]);
   const [docReq, setDocReq] = useState({ type: "invoice", id: "", to: "" });
   const [invoiceSignatureName, setInvoiceSignatureName] = useState("");
+  const [invoiceSignatureData, setInvoiceSignatureData] = useState("");
   const [portalLink, setPortalLink] = useState("");
   const [invoiceSyncMessage, setInvoiceSyncMessage] = useState("");
+  const [emailStatus, setEmailStatus] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState(getApiUrl());
 
   const [forms, setForms] = useState({
-    job: { customer_name: "", service: "", address: "", status: "New", priority: "Medium", scheduled_date: "", technician: "", notes: "" },
+    job: { customer_name: "", service: "", address: "", status: "New", priority: "Medium", scheduled_date: todayIso(), technician: "", notes: "" },
     customer: { name: "", phone: "", email: "", address: "", tags: "" },
     tech: { name: "", phone: "", email: "", skillset: "", active: 1 },
-    appt: { job_id: "", technician_id: "", date: "", time: "", window_end: "", status: "Scheduled", notes: "" },
-    estimate: { customer_name: "", job_id: "", status: "Draft", valid_until: "", notes: "", tax_rate: 0.0825 },
-    invoice: { customer_name: "", amount: "", due_date: "", status: "Unpaid", notes: "", estimate_id: "" },
-    payment: { invoice_id: "", amount: "", method: "Card", payment_date: new Date().toISOString().slice(0, 10), reference: "" },
+    appt: { job_id: "", technician_id: "", date: todayIso(), time: "09:00", window_end: "11:00", status: "Scheduled", notes: "" },
+    estimate: { customer_name: "", job_id: "", status: "Draft", valid_until: addDaysIso(14), notes: "", tax_rate: 0.0825 },
+    invoice: { customer_name: "", amount: "", due_date: todayIso(), status: "Unpaid", notes: "", estimate_id: "" },
+    payment: { invoice_id: "", amount: "", method: "Card", payment_date: todayIso(), reference: "" },
     user: { name: "", email: "", password: "", role: "dispatcher" }
   });
 
@@ -82,13 +90,30 @@ export default function App() {
   const nextJob = useMemo(() => {
     const jobsById = Object.fromEntries(data.jobs.map((job) => [String(job.id), job]));
     const techsById = Object.fromEntries(data.technicians.map((tech) => [String(tech.id), tech]));
-    return data.appointments
+    const appointmentJobs = new Set(data.appointments.map((appt) => String(appt.job_id || "")));
+    const appointmentItems = data.appointments
       .map((appt) => {
         const start = getAppointmentDateTime(appt);
         const job = jobsById[String(appt.job_id)] || {};
         const tech = techsById[String(appt.technician_id)] || {};
-        return { ...appt, start, customer_name: job.customer_name, service: job.service, address: job.address, technician_name: tech.name };
-      })
+        return { ...appt, source: "appointment", start, customer_name: job.customer_name, service: job.service, address: job.address, technician_name: tech.name };
+      });
+    const scheduledJobItems = data.jobs
+      .filter((job) => job.scheduled_date && !appointmentJobs.has(String(job.id)))
+      .map((job) => ({
+        ...job,
+        source: "job",
+        allDay: true,
+        job_id: job.id,
+        date: job.scheduled_date,
+        time: "All day",
+        start: getScheduledJobDateTime(job.scheduled_date),
+        customer_name: job.customer_name,
+        service: job.service,
+        address: job.address,
+        technician_name: job.technician
+      }));
+    return [...appointmentItems, ...scheduledJobItems]
       .filter((appt) => appt.start && appt.start >= new Date() && appt.status !== "Completed")
       .sort((a, b) => a.start - b.start)[0] || null;
   }, [data.appointments, data.jobs, data.technicians]);
@@ -174,6 +199,12 @@ export default function App() {
   }, []);
 
   useEffect(() => { if (token) loadAll(token).catch((e) => { setError(e.message); localStorage.removeItem("flashfix_token"); setToken(""); }); }, [token]);
+
+  useEffect(() => {
+    if (!selectedDocInvoice) return;
+    setInvoiceSignatureName(selectedDocInvoice.customer_signature_name || selectedDocInvoice.customer_name || "");
+    setInvoiceSignatureData("");
+  }, [selectedDocInvoice?.id]);
 
   useEffect(() => {
     if (!nextJob || !("Notification" in window) || Notification.permission !== "granted") return;
@@ -282,17 +313,28 @@ export default function App() {
       if (!docReq.id) return setError(`Select a ${docReq.type} first.`);
       const r = await api(`/documents/${docReq.type}/${docReq.id}/pdf`, { token, method: "POST", body: {} });
       window.open(`${getApiUrl()}${r.url}`, "_blank");
+      setEmailStatus("");
       setError("");
     } catch (e) {
       setError(e.message);
     }
   }
 
+  function openEmailFallback(payload) {
+    if (!payload?.mailto) return false;
+    setEmailStatus(payload.message || "Email draft opened.");
+    setError("");
+    window.location.href = payload.mailto;
+    return true;
+  }
+
   async function emailDoc() {
     try {
       if (!docReq.id) return setError(`Select a ${docReq.type} first.`);
       if (!docReq.to) return setError("Enter recipient email.");
-      await api(`/documents/${docReq.type}/${docReq.id}/email`, { token, method: "POST", body: { to: docReq.to } });
+      const payload = await api(`/documents/${docReq.type}/${docReq.id}/email`, { token, method: "POST", body: { to: docReq.to } });
+      if (!payload.sent && openEmailFallback(payload)) return;
+      setEmailStatus(payload.message || "Email sent.");
       await loadAll(token);
       setError("");
     } catch (e) {
@@ -304,7 +346,15 @@ export default function App() {
     if (docReq.type !== "invoice") return setError("Select Invoice type first.");
     if (!docReq.id) return setError("Select invoice first.");
     if (!invoiceSignatureName.trim()) return setError("Enter customer signature name.");
-    await post(`/invoices/${docReq.id}/sign`, { signature_name: invoiceSignatureName.trim() });
+    if (!invoiceSignatureData && !selectedDocInvoice?.customer_signature_data) return setError("Draw the electronic signature before saving.");
+    const ok = await post(`/invoices/${docReq.id}/sign`, {
+      signature_name: invoiceSignatureName.trim(),
+      signature_data: invoiceSignatureData || selectedDocInvoice?.customer_signature_data
+    });
+    if (ok) {
+      setInvoiceSignatureData("");
+      setEmailStatus("Electronic signature saved to the invoice.");
+    }
   }
 
   async function createPortalLink() {
@@ -313,6 +363,7 @@ export default function App() {
     try {
       const payload = await api(`/invoices/${docReq.id}/portal-link`, { token, method: "POST", body: {} });
       setPortalLink(payload.url);
+      setEmailStatus("Customer portal link created.");
       setError("");
     } catch (e) {
       setError(e.message);
@@ -325,6 +376,8 @@ export default function App() {
     try {
       const payload = await api(`/invoices/${docReq.id}/send-portal-link`, { token, method: "POST", body: { to: docReq.to } });
       setPortalLink(payload.url);
+      if (!payload.sent && openEmailFallback(payload)) return;
+      setEmailStatus(payload.message || "Customer portal email sent.");
       setError("");
     } catch (e) {
       setError(e.message);
@@ -384,7 +437,7 @@ export default function App() {
             <p>{pageMeta.description}</p>
           </div>
           <div className="header-actions">
-            {nextJob && <button className="next-pill" onClick={() => openTab("Appointments")}>Next: {nextJob.time} {nextJob.customer_name || "job"}</button>}
+            {nextJob && <button className="next-pill" onClick={() => openTab(nextJob.source === "job" ? "Jobs" : "Appointments")}>Next: {nextJob.allDay ? formatDate(nextJob.start) : nextJob.time} {nextJob.customer_name || "job"}</button>}
             <button onClick={() => { localStorage.removeItem("flashfix_token"); setToken(""); }}>Logout</button>
           </div>
         </header>
@@ -395,7 +448,7 @@ export default function App() {
         <>
           <section className="grid kpis">{Object.entries(data.dashboard).map(([k, v]) => <article className="card kpi-card" key={k}><span>{k}</span><strong>{k.includes("Revenue") ? currency.format(v) : v}</strong></article>)}</section>
           <section className="grid two dashboard-panels">
-            <NextJobPanel nextJob={nextJob} onOpenAppointments={() => openTab("Appointments")} />
+            <NextJobPanel nextJob={nextJob} onOpen={() => openTab(nextJob?.source === "job" ? "Jobs" : "Appointments")} />
             <NotificationPanel token={token} nextJob={nextJob} setError={setError} />
           </section>
         </>
@@ -450,40 +503,59 @@ export default function App() {
       {tab === "Attachments" && <section className="grid two"><article className="card"><h3>Upload Attachment</h3><form className="form" onSubmit={uploadAttachment}><input name="entity_type" value={attachmentFilter.entity_type} onChange={(e) => setAttachmentFilter({ ...attachmentFilter, entity_type: e.target.value })} /><input name="entity_id" value={attachmentFilter.entity_id} onChange={(e) => setAttachmentFilter({ ...attachmentFilter, entity_id: e.target.value })} /><input name="note" placeholder="note" /><input name="file" type="file" required /><button type="submit">Upload</button></form></article><article className="card"><h3>Attachment Viewer</h3><button onClick={fetchAttachments}>Refresh</button><ul>{attachments.map((a) => <li key={a.id}><a href={`${getApiUrl()}${a.url}`} target="_blank" rel="noreferrer">{a.original_name}</a> <button onClick={() => del(`/attachments/${a.id}`).then(fetchAttachments)}>Delete</button></li>)}</ul></article></section>}
 
       {tab === "Documents" && (
-        <section className="card">
-          <h3>Professional Invoice / Estimate Documents</h3>
-          <p>1) Select record. 2) Optionally apply customer signature. 3) Generate or email PDF.</p>
-          <div className="form">
-            <select value={docReq.type} onChange={(e) => setDocReq((prev) => ({ ...prev, type: e.target.value, id: "" }))}>
-              <option value="invoice">Invoice</option>
-              <option value="estimate">Estimate</option>
-            </select>
-            <select value={docReq.id} onChange={(e) => setDocReq({ ...docReq, id: e.target.value })}>
-              <option value="">Select {docReq.type}</option>
-              {(docReq.type === "estimate" ? data.estimates : data.invoices).map((row) => (
-                <option key={row.id} value={row.id}>
-                  #{row.id} - {row.customer_name}
-                </option>
-              ))}
-            </select>
+        <section className="card document-card">
+          <div className="section-heading">
+            <span>PDF + signature</span>
+            <h3>Professional Invoice / Estimate Documents</h3>
+            <p>Select the record, capture the signature if needed, then generate a PDF or send the customer link.</p>
+          </div>
+          <div className="document-workflow">
+            <div className="form document-controls">
+              <label className="field">
+                <span>Document Type</span>
+                <select value={docReq.type} onChange={(e) => setDocReq((prev) => ({ ...prev, type: e.target.value, id: "" }))}>
+                  <option value="invoice">Invoice</option>
+                  <option value="estimate">Estimate</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Select Record</span>
+                <select value={docReq.id} onChange={(e) => setDocReq({ ...docReq, id: e.target.value })}>
+                  <option value="">Select {docReq.type}</option>
+                  {(docReq.type === "estimate" ? data.estimates : data.invoices).map((row) => (
+                    <option key={row.id} value={row.id}>
+                      #{row.id} - {row.customer_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Customer Email</span>
+                <input type="email" value={docReq.to} onChange={(e) => setDocReq({ ...docReq, to: e.target.value })} placeholder="customer@email.com" />
+              </label>
+              <div className="action-grid">
+                <button className="primary-action" onClick={generateDoc}>Generate PDF</button>
+                <button onClick={emailDoc}>Email PDF Link</button>
+                {docReq.type === "invoice" && (
+                  <>
+                    <button onClick={createPortalLink}>Create Customer Portal Link</button>
+                    <button onClick={emailPortalLink}>Email Customer Portal Link</button>
+                  </>
+                )}
+              </div>
+              {emailStatus && <p className="success-note">{emailStatus}</p>}
+            </div>
             {docReq.type === "invoice" && (
-              <>
-                <input value={invoiceSignatureName} onChange={(e) => setInvoiceSignatureName(e.target.value)} placeholder="Customer signature name (e.g. Maria Lopez)" />
-                <button onClick={applyInvoiceSignature}>Apply Customer Signature</button>
-                <p>
+              <div className="signature-panel document-signature-panel">
+                <label>Customer electronic signature</label>
+                <input value={invoiceSignatureName} onChange={(e) => setInvoiceSignatureName(e.target.value)} placeholder="Customer name" />
+                <SignaturePad onChange={setInvoiceSignatureData} />
+                <button className="primary-action" onClick={applyInvoiceSignature}>Save Electronic Signature</button>
+                <small>
                   Current signature: {selectedDocInvoice?.customer_signature_name || "Not signed"}
                   {selectedDocInvoice?.customer_signature_date ? ` (${selectedDocInvoice.customer_signature_date})` : ""}
-                </p>
-              </>
-            )}
-            <input value={docReq.to} onChange={(e) => setDocReq({ ...docReq, to: e.target.value })} placeholder="Email to (for send)" />
-            <button onClick={generateDoc}>Generate PDF</button>
-            <button onClick={emailDoc}>Email PDF Link</button>
-            {docReq.type === "invoice" && (
-              <>
-                <button onClick={createPortalLink}>Create Customer Portal Link</button>
-                <button onClick={emailPortalLink}>Email Customer Portal Link</button>
-              </>
+                </small>
+              </div>
             )}
           </div>
           {docReq.type === "invoice" && selectedDocInvoice && (
@@ -508,7 +580,7 @@ export default function App() {
               <button onClick={() => window.open(portalLink, "_blank")}>Open Portal</button>
             </div>
           )}
-          <p>Tip: Email sending requires SendGrid keys in backend `.env`. PDF generation works without SendGrid.</p>
+          <p className="helper-copy">If automatic email is not configured, FlashFix opens a ready-to-send email draft with the PDF or portal link.</p>
         </section>
       )}
 
@@ -534,7 +606,7 @@ function QuickActionMenu({ open, setOpen, actions, onSelect }) {
   );
 }
 
-function NextJobPanel({ nextJob, onOpenAppointments }) {
+function NextJobPanel({ nextJob, onOpen }) {
   return (
     <article className="card next-job-card">
       <span>Next Job</span>
@@ -542,15 +614,15 @@ function NextJobPanel({ nextJob, onOpenAppointments }) {
         <>
           <h3>{nextJob.customer_name || `Appointment #${nextJob.id}`}</h3>
           <p>{nextJob.service || "Service appointment"}</p>
-          <strong>{formatDateTime(nextJob.start)}</strong>
-          <small>{nextJob.address || "No address saved"} {nextJob.technician_name ? `| ${nextJob.technician_name}` : ""}</small>
-          <button onClick={onOpenAppointments}>Open Appointments</button>
+          <strong>{nextJob.allDay ? formatDate(nextJob.start) : formatDateTime(nextJob.start)}</strong>
+          <small>{nextJob.source === "job" ? "Scheduled job" : "Appointment"} | {nextJob.address || "No address saved"} {nextJob.technician_name ? `| ${nextJob.technician_name}` : ""}</small>
+          <button onClick={onOpen}>Open {nextJob.source === "job" ? "Job" : "Appointment"}</button>
         </>
       ) : (
         <>
           <h3>No upcoming job</h3>
           <p>Create an appointment to see the next scheduled job here.</p>
-          <button onClick={onOpenAppointments}>Schedule Job</button>
+          <button onClick={onOpen}>Schedule Job</button>
         </>
       )}
     </article>
@@ -870,7 +942,36 @@ function EntityCard({ title, form, setForm, onCreate, headers, rows, readOnly = 
   return <section className="grid two"><article className="card"><h3>Create {title.slice(0, -1)}</h3><SimpleForm fields={form} onChange={setForm} disabled={readOnly} />{readOnly ? <p>Read-only for your role.</p> : <button onClick={onCreate}>Save</button>}</article><article className="card"><h3>{title}</h3><Table headers={headers} rows={rows} /></article></section>;
 }
 
-function SimpleForm({ fields, onChange, disabled = false }) { return <div className="form">{Object.keys(fields).map((k) => <input key={k} disabled={disabled} value={fields[k]} onChange={(e) => onChange({ ...fields, [k]: e.target.value })} placeholder={k} />)}</div>; }
+function fieldLabel(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function fieldInputType(key) {
+  if (["scheduled_date", "date", "due_date", "valid_until", "payment_date", "customer_signature_date"].includes(key)) return "date";
+  if (["time", "window_end"].includes(key)) return "time";
+  if (key === "email") return "email";
+  if (key === "phone") return "tel";
+  if (["amount", "tax_rate", "active", "job_id", "technician_id", "estimate_id", "invoice_id"].includes(key)) return "number";
+  if (key === "password") return "password";
+  return "text";
+}
+
+function SimpleForm({ fields, onChange, disabled = false }) {
+  return (
+    <div className="form">
+      {Object.keys(fields).map((key) => (
+        <label className="field" key={key}>
+          <span>{fieldLabel(key)}</span>
+          {key === "notes" ? (
+            <textarea disabled={disabled} value={fields[key]} onChange={(e) => onChange({ ...fields, [key]: e.target.value })} placeholder={fieldLabel(key)} />
+          ) : (
+            <input type={fieldInputType(key)} disabled={disabled} value={fields[key] ?? ""} onChange={(e) => onChange({ ...fields, [key]: e.target.value })} placeholder={fieldLabel(key)} />
+          )}
+        </label>
+      ))}
+    </div>
+  );
+}
 
 function LineItems({ items, setItems }) {
   return <div className="form">{items.map((it, idx) => <div className="row-actions" key={idx}><input value={it.description} onChange={(e) => mutate(items, setItems, idx, "description", e.target.value)} placeholder="description" /><input type="number" value={it.qty} onChange={(e) => mutate(items, setItems, idx, "qty", Number(e.target.value))} placeholder="qty" /><input type="number" value={it.unit_price} onChange={(e) => mutate(items, setItems, idx, "unit_price", Number(e.target.value))} placeholder="unit price" /></div>)}<button onClick={() => setItems([...items, EMPTY_ITEM])}>Add Line</button></div>;
@@ -880,7 +981,7 @@ function mutate(items, setItems, idx, key, value) { const next = items.slice(); 
 function EditModal({ state, onClose, onSave }) {
   const [row, setRow] = useState(state.row);
   const fields = Object.keys(row).filter((k) => !["created_at", "stripe_payment_intent_id"].includes(k));
-  return <div className="modal-backdrop"><div className="modal"><h3>Edit {state.entity}</h3><div className="form">{fields.map((f) => <input key={f} value={row[f] ?? ""} onChange={(e) => setRow({ ...row, [f]: e.target.value })} placeholder={f} />)}</div><div className="row-actions"><button onClick={() => onSave(row)}>Save</button><button onClick={onClose}>Cancel</button></div></div></div>;
+  return <div className="modal-backdrop"><div className="modal"><h3>Edit {state.entity}</h3><div className="form">{fields.map((f) => <label className="field" key={f}><span>{fieldLabel(f)}</span><input type={fieldInputType(f)} value={row[f] ?? ""} onChange={(e) => setRow({ ...row, [f]: e.target.value })} placeholder={fieldLabel(f)} /></label>)}</div><div className="row-actions"><button onClick={() => onSave(row)}>Save</button><button onClick={onClose}>Cancel</button></div></div></div>;
 }
 
 function Table({ headers, rows }) { return <div className="table-wrap"><table><thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={`${i}-${j}`}>{c}</td>)}</tr>)}</tbody></table></div>; }
@@ -890,6 +991,21 @@ function getAppointmentDateTime(appt) {
   const time = String(appt.time || "09:00").slice(0, 5);
   const parsed = new Date(`${date}T${time.length === 5 ? time : "09:00"}:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getScheduledJobDateTime(dateValue) {
+  const date = String(dateValue || "").slice(0, 10);
+  const parsed = new Date(`${date}T23:59:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric"
+  }).format(value);
 }
 
 function formatDateTime(value) {
