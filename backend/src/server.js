@@ -187,7 +187,7 @@ async function deleteAttachmentsForEntity(entityType, entityId) {
 function getInitialOwnerConfig() {
   return {
     email: String(process.env.INITIAL_OWNER_EMAIL || "").trim().toLowerCase(),
-    password: process.env.INITIAL_OWNER_PASSWORD || "",
+    password: String(process.env.INITIAL_OWNER_PASSWORD || "").trim(),
     name: String(process.env.INITIAL_OWNER_NAME || "FlashFix Owner").trim() || "FlashFix Owner"
   };
 }
