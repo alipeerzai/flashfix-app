@@ -9,6 +9,7 @@ import sgMail from "@sendgrid/mail";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import PDFDocument from "pdfkit";
@@ -98,6 +99,16 @@ app.use(express.json());
 app.use("/uploads", express.static(uploadsDir));
 app.use("/pdfs", express.static(docsDir));
 
+app.get("/files/:id", async (req, res) => {
+  const file = await get("SELECT * FROM stored_files WHERE id = ?", [Number(req.params.id)]);
+  if (!file) return res.status(404).json({ error: "File not found" });
+  const buffer = Buffer.isBuffer(file.data_blob) ? file.data_blob : Buffer.from(file.data_blob);
+  res.setHeader("Content-Type", file.mime_type || "application/octet-stream");
+  res.setHeader("Content-Length", buffer.length);
+  res.setHeader("Content-Disposition", `inline; filename="${safeFileName(file.file_name)}"`);
+  res.send(buffer);
+});
+
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) return res.status(403).json({ error: "Forbidden" });
@@ -138,6 +149,39 @@ function getPublicApiBaseUrl(req) {
   if (process.env.API_PUBLIC_BASE_URL) return process.env.API_PUBLIC_BASE_URL.replace(/\/+$/, "");
   if (process.env.RENDER_EXTERNAL_HOSTNAME) return `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
   return `${req.protocol}://${req.get("host")}`;
+}
+
+function safeFileName(name) {
+  return String(name || "file").replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
+
+async function storeFile({ fileName, mimeType, buffer }) {
+  const stored = await run(
+    "INSERT INTO stored_files(file_name, mime_type, file_size, data_blob) VALUES (?, ?, ?, ?)",
+    [safeFileName(fileName), mimeType || "application/octet-stream", buffer.length, buffer]
+  );
+  return { id: stored.id, fileName: safeFileName(fileName), url: `/files/${stored.id}` };
+}
+
+async function deleteStoredFile(id) {
+  if (!id) return;
+  await run("DELETE FROM stored_files WHERE id = ?", [id]);
+}
+
+async function deleteAttachmentRecord(row) {
+  if (!row) return;
+  if (row.stored_file_id) {
+    await deleteStoredFile(row.stored_file_id);
+  } else if (row.stored_name) {
+    const filePath = path.join(uploadsDir, row.stored_name);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+  await run("DELETE FROM attachments WHERE id = ?", [row.id]);
+}
+
+async function deleteAttachmentsForEntity(entityType, entityId) {
+  const rows = await all("SELECT * FROM attachments WHERE entity_type = ? AND entity_id = ?", [entityType, entityId]);
+  for (const row of rows) await deleteAttachmentRecord(row);
 }
 
 async function bootstrapOwnerUser() {
@@ -299,9 +343,14 @@ async function syncInvoiceCheckoutSession(invoiceId) {
 async function renderDocumentPdf(kind, id) {
   const now = new Date().toISOString().replace(/[:.]/g, "-");
   const fileName = `${kind}-${id}-${now}.pdf`;
-  const outPath = path.join(docsDir, fileName);
   const doc = new PDFDocument({ margin: 42, size: "A4" });
-  const stream = fs.createWriteStream(outPath);
+  const stream = new PassThrough();
+  const chunks = [];
+  const finished = new Promise((resolve, reject) => {
+    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
   doc.pipe(stream);
 
   const isInvoice = kind === "invoice";
@@ -440,8 +489,10 @@ async function renderDocumentPdf(kind, id) {
   }
 
   doc.end();
-  await new Promise((resolve) => stream.on("finish", resolve));
-  return { fileName, filePath: outPath, url: `/pdfs/${fileName}` };
+  await finished;
+  const buffer = Buffer.concat(chunks);
+  const stored = await storeFile({ fileName, mimeType: "application/pdf", buffer });
+  return { fileName, filePath: null, url: stored.url };
 }
 
 async function sendReminderChannels({ customer, subject, text }) {
@@ -577,7 +628,7 @@ registerCrudRoutes({
   beforeDelete: async (id) => {
     await run("DELETE FROM invoice_items WHERE invoice_id = ?", [id]);
     await run("DELETE FROM payments WHERE invoice_id = ?", [id]);
-    await run("DELETE FROM attachments WHERE entity_type = 'invoice' AND entity_id = ?", [id]);
+    await deleteAttachmentsForEntity("invoice", id);
   }
 });
 
@@ -863,27 +914,28 @@ app.post("/attachments", authRequired, requireRole(...allRoles), upload.single("
   if (!req.file) return res.status(400).json({ error: "File is required" });
   const { entity_type, entity_id, note = "" } = req.body;
   if (!entity_type || !entity_id) return res.status(400).json({ error: "entity_type and entity_id are required" });
+  const buffer = await fs.promises.readFile(req.file.path);
+  const stored = await storeFile({ fileName: req.file.originalname, mimeType: req.file.mimetype, buffer });
+  await fs.promises.unlink(req.file.path).catch(() => {});
   const r = await run(
-    "INSERT INTO attachments(entity_type, entity_id, original_name, stored_name, mime_type, file_size, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [entity_type, Number(entity_id), req.file.originalname, req.file.filename, req.file.mimetype, req.file.size, note]
+    "INSERT INTO attachments(entity_type, entity_id, original_name, stored_name, stored_file_id, mime_type, file_size, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [entity_type, Number(entity_id), req.file.originalname, req.file.filename, stored.id, req.file.mimetype, req.file.size, note]
   );
-  res.status(201).json({ id: r.id, url: `/uploads/${req.file.filename}` });
+  res.status(201).json({ id: r.id, url: stored.url });
 });
 
 app.get("/attachments", authRequired, requireRole(...allRoles), async (req, res) => {
   const { entity_type, entity_id } = req.query;
   if (!entity_type || !entity_id) return res.status(400).json({ error: "entity_type and entity_id are required" });
   const rows = await all("SELECT * FROM attachments WHERE entity_type = ? AND entity_id = ? ORDER BY id DESC", [entity_type, Number(entity_id)]);
-  res.json(rows.map((r) => ({ ...r, url: `/uploads/${r.stored_name}` })));
+  res.json(rows.map((r) => ({ ...r, url: r.stored_file_id ? `/files/${r.stored_file_id}` : `/uploads/${r.stored_name}` })));
 });
 
 app.delete("/attachments/:id", authRequired, requireRole("owner", "dispatcher", "accounting"), async (req, res) => {
   const id = Number(req.params.id);
   const row = await get("SELECT * FROM attachments WHERE id = ?", [id]);
   if (!row) return res.status(404).json({ error: "Not found" });
-  const filePath = path.join(uploadsDir, row.stored_name);
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  await run("DELETE FROM attachments WHERE id = ?", [id]);
+  await deleteAttachmentRecord(row);
   res.json({ ok: true });
 });
 

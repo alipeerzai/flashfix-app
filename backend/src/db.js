@@ -1,4 +1,5 @@
 import sqlite3 from "sqlite3";
+import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,9 +16,31 @@ const dbPath = process.env.DATABASE_PATH
   : path.join(dataDir, "flashfix.db");
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-export const db = new sqlite3.Database(dbPath);
+export const isPostgres = Boolean(process.env.DATABASE_URL);
+export const db = isPostgres
+  ? new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === "false" ? false : { rejectUnauthorized: false }
+    })
+  : new sqlite3.Database(dbPath);
+
+function toPostgresSql(sql) {
+  let i = 0;
+  let converted = sql.replace(/\?/g, () => `$${++i}`);
+  if (/^\s*INSERT\s+/i.test(converted) && !/\sRETURNING\s+/i.test(converted)) {
+    converted += " RETURNING id";
+  }
+  return converted;
+}
 
 export function run(sql, params = []) {
+  if (isPostgres) {
+    return db.query(toPostgresSql(sql), params).then((result) => ({
+      id: result.rows[0]?.id,
+      changes: result.rowCount
+    }));
+  }
+
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(err) {
       if (err) reject(err);
@@ -27,6 +50,10 @@ export function run(sql, params = []) {
 }
 
 export function all(sql, params = []) {
+  if (isPostgres) {
+    return db.query(toPostgresSql(sql), params).then((result) => result.rows);
+  }
+
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
       if (err) reject(err);
@@ -36,6 +63,10 @@ export function all(sql, params = []) {
 }
 
 export function get(sql, params = []) {
+  if (isPostgres) {
+    return db.query(toPostgresSql(sql), params).then((result) => result.rows[0]);
+  }
+
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
       if (err) reject(err);
@@ -45,15 +76,24 @@ export function get(sql, params = []) {
 }
 
 async function ensureColumn(table, column, definition) {
-  const columns = await all(`PRAGMA table_info(${table})`);
+  const columns = isPostgres
+    ? await all(
+        "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+        [table]
+      )
+    : await all(`PRAGMA table_info(${table})`);
   if (!columns.some((c) => c.name === column)) {
     await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
 export async function initDb() {
+  const idColumn = isPostgres ? "id SERIAL PRIMARY KEY" : "id INTEGER PRIMARY KEY AUTOINCREMENT";
+  const binaryColumn = isPostgres ? "BYTEA" : "BLOB";
+  const timestampColumn = isPostgres ? "TIMESTAMPTZ" : "TEXT";
+
   await run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
@@ -61,28 +101,28 @@ export async function initDb() {
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS technicians (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     name TEXT NOT NULL,
     phone TEXT,
     email TEXT,
     skillset TEXT,
     active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS customers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
     email TEXT,
     address TEXT NOT NULL,
     tags TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   await ensureColumn("customers", "tags", "TEXT");
 
   await run(`CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     customer_name TEXT NOT NULL,
     service TEXT NOT NULL,
     address TEXT NOT NULL,
@@ -91,11 +131,11 @@ export async function initDb() {
     scheduled_date TEXT NOT NULL,
     technician TEXT,
     notes TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS appointments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     job_id INTEGER,
     technician_id INTEGER,
     date TEXT NOT NULL,
@@ -103,11 +143,11 @@ export async function initDb() {
     window_end TEXT,
     status TEXT NOT NULL DEFAULT 'Scheduled',
     notes TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS estimates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     customer_name TEXT NOT NULL,
     job_id INTEGER,
     subtotal REAL NOT NULL,
@@ -116,11 +156,11 @@ export async function initDb() {
     status TEXT NOT NULL DEFAULT 'Draft',
     valid_until TEXT,
     notes TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS estimate_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     estimate_id INTEGER NOT NULL,
     description TEXT NOT NULL,
     qty REAL NOT NULL,
@@ -129,7 +169,7 @@ export async function initDb() {
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS invoices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     customer_name TEXT NOT NULL,
     amount REAL NOT NULL,
     due_date TEXT NOT NULL,
@@ -144,7 +184,7 @@ export async function initDb() {
     portal_token_expires_at TEXT,
     stripe_checkout_session_id TEXT,
     stripe_checkout_url TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   await ensureColumn("invoices", "estimate_id", "INTEGER");
   await ensureColumn("invoices", "notes", "TEXT");
@@ -157,7 +197,7 @@ export async function initDb() {
   await ensureColumn("invoices", "stripe_checkout_url", "TEXT");
 
   await run(`CREATE TABLE IF NOT EXISTS invoice_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     invoice_id INTEGER NOT NULL,
     description TEXT NOT NULL,
     qty REAL NOT NULL,
@@ -166,7 +206,7 @@ export async function initDb() {
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     invoice_id INTEGER NOT NULL,
     amount REAL NOT NULL,
     method TEXT NOT NULL,
@@ -174,35 +214,46 @@ export async function initDb() {
     reference TEXT,
     stripe_checkout_session_id TEXT,
     stripe_payment_intent_id TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   await ensureColumn("payments", "stripe_checkout_session_id", "TEXT");
   await ensureColumn("payments", "stripe_payment_intent_id", "TEXT");
 
   await run(`CREATE TABLE IF NOT EXISTS activity_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id INTEGER,
     details TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  await run(`CREATE TABLE IF NOT EXISTS stored_files (
+    ${idColumn},
+    file_name TEXT NOT NULL,
+    mime_type TEXT,
+    file_size INTEGER,
+    data_blob ${binaryColumn} NOT NULL,
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     entity_type TEXT NOT NULL,
     entity_id INTEGER NOT NULL,
     original_name TEXT NOT NULL,
     stored_name TEXT NOT NULL,
+    stored_file_id INTEGER,
     mime_type TEXT,
     file_size INTEGER,
     note TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
+  await ensureColumn("attachments", "stored_file_id", "INTEGER");
 
   await run(`CREATE TABLE IF NOT EXISTS reminder_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ${idColumn},
     reminder_type TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id INTEGER NOT NULL,
@@ -210,7 +261,7 @@ export async function initDb() {
     channel TEXT NOT NULL,
     status TEXT NOT NULL,
     message TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at ${timestampColumn} NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
 }
 

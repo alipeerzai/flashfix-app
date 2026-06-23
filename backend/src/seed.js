@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { initDb, run } from "./db.js";
 
 await initDb();
-for (const table of ["users", "technicians", "customers", "jobs", "appointments", "estimates", "estimate_items", "invoices", "invoice_items", "payments", "activity_logs", "attachments", "reminder_logs"]) {
+for (const table of ["users", "technicians", "customers", "jobs", "appointments", "estimates", "estimate_items", "invoices", "invoice_items", "payments", "activity_logs", "attachments", "stored_files", "reminder_logs"]) {
   await run(`DELETE FROM ${table}`);
 }
 

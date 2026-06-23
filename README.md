@@ -103,4 +103,4 @@ You can use FlashFix TX privately without publishing to the Apple App Store.
 - Private deployment guide: `PRIVATE_DEPLOYMENT.md`
 - iPhone usage: open the hosted frontend in Safari, then use `Share > Add to Home Screen`
 
-The hosted backend should use persistent storage (`DATA_DIR=/var/data`) so invoices, PDFs, uploads, and the SQLite database survive restarts.
+The hosted backend should use a free Postgres `DATABASE_URL` from Supabase or Neon. Invoices, PDFs, uploads, and payments are stored in the database so the Render backend can run without a paid persistent disk.

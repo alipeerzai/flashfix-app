@@ -2,6 +2,7 @@ services:
   - type: web
     name: flashfix-api
     runtime: node
+    plan: free
     rootDir: backend
     buildCommand: npm ci
     startCommand: npm start
@@ -11,8 +12,10 @@ services:
         value: production
       - key: PORT
         value: 10000
-      - key: DATA_DIR
-        value: /var/data
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
       - key: FRONTEND_ORIGIN
         value: https://flashfix-private-app.onrender.com
       - key: PORTAL_BASE_URL
@@ -51,10 +54,6 @@ services:
         value: www.flashfixtx.com
       - key: COMPANY_ADDRESS
         value: San Antonio, TX
-    disk:
-      name: flashfix-data
-      mountPath: /var/data
-      sizeGB: 5
 
   - type: web
     name: flashfix-private-app

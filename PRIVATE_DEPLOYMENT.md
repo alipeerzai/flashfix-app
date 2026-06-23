@@ -15,9 +15,32 @@ Use Render with:
 
 - One Node web service for `backend`.
 - One static site for `frontend`.
-- One persistent disk mounted at `/var/data` for SQLite, uploads, and PDFs.
+- One free hosted Postgres database from Supabase or Neon.
 
 The included `render.yaml` defines this setup.
+
+## Step 0: Create A Free Postgres Database
+
+Create a free Postgres project before deploying Render.
+
+Good options:
+
+- Supabase: create a project, then copy the Postgres connection string.
+- Neon: create a project, then copy the Postgres connection string.
+
+You need a URL that looks like:
+
+```text
+postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require
+```
+
+Render will store this as:
+
+```text
+DATABASE_URL=postgresql://...
+```
+
+The app stores invoices, payments, customers, uploaded attachments, and generated PDFs in this database. That means Render does not need a paid persistent disk.
 
 ## Step 1: Push To GitHub
 
@@ -51,6 +74,8 @@ When Render asks for secret values, enter:
 ```text
 INITIAL_OWNER_EMAIL=your real owner login email
 INITIAL_OWNER_PASSWORD=strong private password, at least 10 characters
+DATABASE_URL=your Supabase/Neon Postgres connection string
+DATABASE_SSL=true
 STRIPE_SECRET_KEY=your Stripe secret key
 STRIPE_WEBHOOK_SECRET=leave blank first, then update after webhook setup
 SENDGRID_API_KEY=optional, for sending emails
